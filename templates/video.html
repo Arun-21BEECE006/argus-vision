@@ -1,0 +1,115 @@
+{% extends "base.html" %} {% block title %}Video Detection — Argus Vision{%
+endblock %} {% block content %}
+<section class="tool">
+  <div class="tool-head">
+    <div class="eyebrow mono">
+      <span class="dot"></span> SRC_02 · VIDEO CLIP
+    </div>
+    <h1>Video detection</h1>
+    <p>
+      Upload a clip. Argus processes it frame by frame and plays back the
+      annotated result here.
+    </p>
+  </div>
+
+  <div class="tool-grid">
+    <div class="panel">
+      <h4>Input</h4>
+      <div class="drop" id="drop">
+        <b>Drop a video here</b><br />or click to browse
+        <div class="fname mono" id="fname"></div>
+      </div>
+      <input type="file" id="file" accept="video/*" hidden />
+
+      <label class="field">CONFIDENCE THRESHOLD</label>
+      <div class="slider-row">
+        <input
+          type="range"
+          id="conf"
+          min="0.1"
+          max="0.9"
+          step="0.05"
+          value="0.35"
+        />
+        <span class="slider-val mono" id="confVal">0.35</span>
+      </div>
+
+      <button class="btn btn-primary btn-run" id="run">Run detection</button>
+      <div class="err" id="err"></div>
+      <p class="hint">
+        Longer clips take longer — the whole video is processed before playback.
+        Formats: mp4, mov, avi, mkv, webm.
+      </p>
+    </div>
+
+    <div>
+      <div class="stage">
+        <span class="corner tl"></span><span class="corner tr"></span>
+        <span class="corner bl"></span><span class="corner br"></span>
+        <div class="placeholder" id="ph">
+          <svg
+            width="52"
+            height="52"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+          >
+            <rect x="2" y="4" width="20" height="16" rx="2" />
+            <path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none" />
+          </svg>
+          <div>Annotated video appears here</div>
+        </div>
+        <video
+          id="out"
+          controls
+          playsinline
+          style="display: none; width: 100%; height: 100%; object-fit: contain"
+        ></video>
+        <div class="loading" id="load">
+          <div class="spinner"></div>
+          <span>PROCESSING VIDEO…</span>
+        </div>
+      </div>
+      <div class="readout" id="readout" style="display: none">
+        <div class="summary-chips" id="chips"></div>
+        <p class="hint" id="meta"></p>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %} {% block scripts %}
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+<script>
+  setupUpload();
+  document.getElementById("run").onclick = async () => {
+    const f = window.__file;
+    if (!f) {
+      showErr("Choose a video first.");
+      return;
+    }
+    toggleLoad(true);
+    showErr("");
+    const fd = new FormData();
+    fd.append("file", f);
+    fd.append("conf", document.getElementById("conf").value);
+    try {
+      const r = await fetch("/api/detect/video", { method: "POST", body: fd });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Processing failed.");
+      const v = document.getElementById("out");
+      v.src = d.output;
+      v.style.display = "block";
+      v.load();
+      document.getElementById("ph").style.display = "none";
+      // reuse chip renderer (no per-box list for video)
+      renderReadout({ total: d.total, summary: d.summary });
+      document.getElementById("meta").textContent =
+        `Processed ${d.frames} frames · counts show peak simultaneous objects per class.`;
+    } catch (e) {
+      showErr(e.message);
+    }
+    toggleLoad(false);
+  };
+</script>
+{% endblock %}

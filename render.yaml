@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: argus-vision
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --timeout 120
+    envVars:
+      - key: ARGUS_MODEL
+        value: yolo11n.pt
+      - key: ARGUS_CONF
+        value: "0.35"

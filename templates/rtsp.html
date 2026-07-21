@@ -1,0 +1,108 @@
+{% extends "base.html" %} {% block title %}RTSP Camera — Argus Vision{% endblock
+%} {% block content %}
+<section class="tool">
+  <div class="tool-head">
+    <div class="eyebrow mono">
+      <span class="dot"></span> SRC_04 · NETWORK CAMERA
+    </div>
+    <h1>RTSP camera detection</h1>
+    <p>
+      Connect an IP / CCTV camera by its stream URL. Argus opens the feed and
+      detects people, vehicles, and more in real time.
+    </p>
+  </div>
+
+  <div class="tool-grid">
+    <div class="panel">
+      <h4>Connection</h4>
+      <label class="field">RTSP / HTTP STREAM URL</label>
+      <input
+        type="url"
+        id="url"
+        placeholder="rtsp://user:pass@192.168.1.10:554/stream"
+      />
+
+      <label class="field">CONFIDENCE THRESHOLD</label>
+      <div class="slider-row">
+        <input
+          type="range"
+          id="conf"
+          min="0.1"
+          max="0.9"
+          step="0.05"
+          value="0.35"
+        />
+        <span class="slider-val mono" id="confVal">0.35</span>
+      </div>
+
+      <div class="live-controls">
+        <button class="btn btn-primary" id="connect">Connect</button>
+        <button class="btn btn-ghost" id="stop">Disconnect</button>
+      </div>
+      <div class="err" id="err"></div>
+      <p class="hint">
+        Typical URL: <code>rtsp://user:pass@camera-ip:554/stream1</code>. Check
+        your camera's manual for the exact path. Public test stream:
+        <code>rtsp://rtspstream:...@zephyr.rtsp.stream.</code>
+      </p>
+    </div>
+
+    <div>
+      <div class="stage">
+        <span class="corner tl"></span><span class="corner tr"></span>
+        <span class="corner bl"></span><span class="corner br"></span>
+        <div class="placeholder" id="ph">
+          <svg
+            width="52"
+            height="52"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+          >
+            <path d="M4 6h16v10H4z" />
+            <path d="M8 20h8M12 16v4" />
+            <path d="M15 9l3 2-3 2z" fill="currentColor" stroke="none" />
+          </svg>
+          <div>Enter a stream URL and press “Connect”</div>
+        </div>
+        <img id="feed" style="display: none" />
+        <div class="loading" id="load">
+          <div class="spinner"></div>
+          <span>CONNECTING…</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %} {% block scripts %}
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+<script>
+  setupUpload();
+  const feed = document.getElementById("feed");
+  const ph = document.getElementById("ph");
+
+  document.getElementById("connect").onclick = () => {
+    const url = document.getElementById("url").value.trim();
+    if (!url) {
+      showErr("Enter a stream URL first.");
+      return;
+    }
+    showErr("");
+    toggleLoad(true);
+    const conf = document.getElementById("conf").value;
+    feed.onload = () => toggleLoad(false);
+    feed.src = `/api/stream?source=${encodeURIComponent(url)}&conf=${conf}&t=${Date.now()}`;
+    feed.style.display = "block";
+    ph.style.display = "none";
+    // MJPEG never fires a clean onload; clear the spinner after a moment.
+    setTimeout(() => toggleLoad(false), 4000);
+  };
+  document.getElementById("stop").onclick = () => {
+    feed.src = "";
+    feed.style.display = "none";
+    ph.style.display = "block";
+    toggleLoad(false);
+  };
+</script>
+{% endblock %}
