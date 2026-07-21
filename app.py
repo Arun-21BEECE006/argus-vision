@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 import threading
-
+import gc
 import cv2
 import numpy as np
 from flask import (Flask, render_template, request, jsonify,
@@ -72,13 +72,21 @@ def api_detect_image():
 
     conf = float(request.form.get("conf", DEFAULT_CONF))
 
+    # --- AFTER (replace with this) ---
     data = np.frombuffer(file.read(), np.uint8)
     img = cv2.imdecode(data, cv2.IMREAD_COLOR)
     if img is None:
         return jsonify({"error": "Could not read image."}), 400
 
-    annotated, summary, details = detector.detect(img, conf=conf)
+    # Resize large images before inference to save memory
+    MAX_DIM = 1280
+    h, w = img.shape[:2]
+    if max(h, w) > MAX_DIM:
+        scale = MAX_DIM / max(h, w)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)))
 
+    annotated, summary, details = detector.detect(img, conf=conf)
+    gc.collect()   # ← free memory after every detection
     out_name = f"{uuid.uuid4().hex}.jpg"
     cv2.imwrite(os.path.join(OUTPUT_DIR, out_name), annotated)
 
