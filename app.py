@@ -1,9 +1,11 @@
 """
 Argus Vision - Flask backend
-Video detection uses tiny 320px inference to stay under 512MB RAM.
+Fixed: _detect_small scale factor bug removed entirely.
+Fixed: yolo11s-safe video processing (320p resize, 60 frames max).
 """
 
 import gc
+import json
 import os
 import time
 import uuid
@@ -26,10 +28,10 @@ ALLOWED_IMG = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 ALLOWED_VID = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024   # 100 MB max
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
 
 
-# ── Pages ────────────────────────────────────────────────────────────
+# ── Pages ─────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
     return render_template("index.html", model=detector.model_name,
@@ -52,7 +54,7 @@ def page_rtsp():
     return render_template("rtsp.html")
 
 
-# ── Image detection ──────────────────────────────────────────────────
+# ── Image detection ────────────────────────────────────────────────────
 @app.route("/api/detect/image", methods=["POST"])
 def api_detect_image():
     try:
@@ -86,52 +88,14 @@ def api_detect_image():
         return jsonify({"error": traceback.format_exc()}), 500
 
 
-# ── Video detection ──────────────────────────────────────────────────
-def _detect_small(frame, conf):
-    """
-    Run inference on a 320x320 thumbnail — uses ~60MB RAM peak.
-    Draw the scaled-up boxes onto the original-sized frame.
-    """
-    orig_h, orig_w = frame.shape[:2]
-
-    # Shrink to 320px for inference
-    small = cv2.resize(frame, (480, 270))
-    _, summary, details = detector.detect(small, conf=conf)
-
-    # Scale boxes back to original frame size and draw manually
-    annotated  = frame.copy()
-    sx = orig_w / 320
-    sy = orig_h / 320
-
-    from detector import _color
-    img_diag   = (orig_h**2 + orig_w**2)**0.5
-    lw         = max(2, int(img_diag / 500))
-    font_scale = max(0.5, img_diag / 2500)
-    font_thick = max(1, lw // 2)
-    pad        = max(4, lw * 2)
-
-    for d in details:
-        x1 = int(d["box"][0] * sx)
-        y1 = int(d["box"][1] * sy)
-        x2 = int(d["box"][2] * sx)
-        y2 = int(d["box"][3] * sy)
-        label = d["label"]
-        conf_ = d["conf"]
-        color = _color(list(detector.names.values()).index(label)
-                       if label in detector.names.values() else 0)
-
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, lw)
-        txt = f"{label} {conf_:.2f}"
-        (tw, th), _ = cv2.getTextSize(
-            txt, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
-        ly = max(y1, th + pad)
-        cv2.rectangle(annotated, (x1, ly - th - pad),
-                      (x1 + tw + pad, ly), color, -1)
-        cv2.putText(annotated, txt, (x1 + pad // 2, ly - pad // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-                    (0, 0, 0), font_thick, cv2.LINE_AA)
-
-    return annotated, summary
+# ── Video detection ────────────────────────────────────────────────────
+def _fit_to(frame, max_dim):
+    """Resize frame so longest edge = max_dim, keeping aspect ratio."""
+    h, w = frame.shape[:2]
+    if max(w, h) <= max_dim:
+        return frame
+    s = max_dim / max(w, h)
+    return cv2.resize(frame, (int(w * s), int(h * s)))
 
 
 @app.route("/api/detect/video", methods=["POST"])
@@ -155,49 +119,49 @@ def api_detect_video():
         if not cap.isOpened():
             return jsonify({"error": "Could not open video."}), 400
 
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25
-        w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps    = cap.get(cv2.CAP_PROP_FPS) or 25
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # Cap output at 640px wide — enough for display, saves write RAM
-        if w > 640:
-            scale = 640 / w
-            w = 640
-            h = int(h * scale)
+        # ── 320p max for video — keeps yolo11s under 512MB RAM ────────
+        MAX_DIM = 320
+        scale   = min(1.0, MAX_DIM / max(orig_w, orig_h))
+        out_w   = int(orig_w * scale)
+        out_h   = int(orig_h * scale)
 
         out_path = os.path.join(OUTPUT_DIR, f"{uuid.uuid4().hex}.mp4")
         writer   = cv2.VideoWriter(
-            out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+            out_path, cv2.VideoWriter_fourcc(*"mp4v"),
+            fps, (out_w, out_h))
 
         if not writer.isOpened():
             cap.release()
             return jsonify({"error": "VideoWriter failed."}), 500
 
         from collections import Counter
-        totals    = Counter()
-        idx       = 0
-        written   = 0
-        MAX_OUT   = 100          # write max 100 frames (~3-4 sec)
-        last_ann  = None
+        totals  = Counter()
+        written = 0
+        MAX_FRAMES = 60      # ~2 sec at 30fps — safe for yolo11s RAM
 
-        while written < MAX_OUT:
+        while written < MAX_FRAMES:
             ok, frame = cap.read()
             if not ok:
                 break
 
-            frame = cv2.resize(frame, (w, h))
+            # Resize keeping correct aspect ratio — no squishing!
+            frame = cv2.resize(frame, (out_w, out_h))
 
-            # Run detection on every frame using tiny 320px inference
-            last_ann, summary = _detect_small(frame, conf)
+            # Direct detection — no separate small-frame logic needed
+            annotated, summary, _ = detector.detect(frame, conf=conf)
+
             for k, v in summary.items():
                 totals[k] = max(totals[k], v)
 
-            writer.write(last_ann)
-            idx    += 1
+            writer.write(annotated)
             written += 1
 
-            # Free memory every 10 frames — critical on 512MB
-            if idx % 10 == 0:
+            # Aggressive memory cleanup for yolo11s
+            if written % 5 == 0:
                 gc.collect()
 
         cap.release()
@@ -224,6 +188,33 @@ def api_detect_video():
         return jsonify({"error": traceback.format_exc()}), 500
 
 
+# ── Single-frame detection (browser webcam) ────────────────────────────
+@app.route("/api/detect/frame", methods=["POST"])
+def api_detect_frame():
+    try:
+        conf  = float(request.args.get("conf", DEFAULT_CONF))
+        data  = np.frombuffer(request.get_data(), np.uint8)
+        frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if frame is None:
+            return "Bad frame", 400
+
+        # Keep aspect ratio — critical for correct detection
+        frame = _fit_to(frame, max_dim=480)
+
+        annotated, summary, _ = detector.detect(frame, conf=conf)
+        gc.collect()
+
+        _, buf = cv2.imencode(".jpg", annotated,
+                              [cv2.IMWRITE_JPEG_QUALITY, 80])
+        resp = Response(buf.tobytes(), mimetype="image/jpeg")
+        resp.headers["X-Summary"]                     = json.dumps(summary)
+        resp.headers["Access-Control-Expose-Headers"] = "X-Summary"
+        return resp
+    except Exception:
+        return "Error", 500
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
 def _cleanup(path):
     if path and os.path.exists(path):
         try: os.remove(path)
@@ -248,43 +239,7 @@ def _try_h264(src):
     return src
 
 
-
-# ── Single-frame detection (browser webcam) ──────────────────────
-@app.route("/api/detect/frame", methods=["POST"])
-def api_detect_frame():
-    """
-    Receives a JPEG from the browser webcam, runs detection,
-    returns annotated JPEG. Used by the live camera page.
-    """
-    try:
-        conf = float(request.args.get("conf", DEFAULT_CONF))
-        data = np.frombuffer(request.get_data(), np.uint8)
-        frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
-        if frame is None:
-            return "Bad frame", 400
-
-        # Resize to 480p max for fast inference on free tier
-        fh, fw = frame.shape[:2]
-        if max(fw, fh) > 480:
-            s     = 480 / max(fw, fh)
-            frame = cv2.resize(frame, (int(fw * s), int(fh * s)))
-
-        annotated, summary, _ = detector.detect(frame, conf=conf)
-        gc.collect()
-
-        _, buf = cv2.imencode(".jpg", annotated,
-                              [cv2.IMWRITE_JPEG_QUALITY, 80])
-
-        import json
-        resp = Response(buf.tobytes(), mimetype="image/jpeg")
-        resp.headers["X-Summary"] = json.dumps(summary)
-        resp.headers["Access-Control-Expose-Headers"] = "X-Summary"
-        return resp
-    except Exception:
-        return "Error", 500
-
-
-# ── Live streaming ────────────────────────────────────────────────────
+# ── Live streaming (RTSP) ──────────────────────────────────────────────
 def _open_source(source):
     if source == "webcam": return cv2.VideoCapture(0)
     if source.isdigit():   return cv2.VideoCapture(int(source))
@@ -298,7 +253,8 @@ def _mjpeg(source, conf):
         cv2.putText(err, "Cannot open source", (60, 190),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 80, 240), 2)
         _, buf = cv2.imencode(".jpg", err)
-        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
+        yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+               + buf.tobytes() + b"\r\n")
         return
     try:
         while True:
@@ -309,7 +265,8 @@ def _mjpeg(source, conf):
             ok, buf   = cv2.imencode(".jpg", annotated,
                                      [cv2.IMWRITE_JPEG_QUALITY, 75])
             if ok:
-                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                       + buf.tobytes() + b"\r\n")
     finally:
         cap.release()
 
