@@ -1,8 +1,8 @@
 """
 Argus Vision — detection engine (ONNX Runtime edition)
 Replaces PyTorch (~200MB) with onnxruntime (~15MB).
-Total idle RAM drops from ~500MB to ~180MB → fits Render free tier.
-Your app.py, templates, static folder — completely unchanged.
+Total idle RAM drops from ~500MB to ~180MB — fits Render free tier.
+Box thickness and font scale automatically adapt to image size.
 """
 
 import os
@@ -16,7 +16,6 @@ MODEL_PATH   = os.environ.get("ARGUS_MODEL",  "yolo11n.onnx")
 DEFAULT_CONF = float(os.environ.get("ARGUS_CONF", "0.35"))
 IMGSZ        = 640
 
-# All 80 COCO class names — same order as YOLO training
 COCO_NAMES = {
     0:"person",1:"bicycle",2:"car",3:"motorcycle",4:"airplane",
     5:"bus",6:"train",7:"truck",8:"boat",9:"traffic light",
@@ -37,7 +36,6 @@ COCO_NAMES = {
     79:"toothbrush"
 }
 
-# Colour palette — one per class
 _PALETTE = [
     (255,56,56),(255,157,151),(255,112,31),(255,178,29),(207,210,49),
     (72,249,10),(146,204,23),(61,219,134),(26,147,52),(0,212,187),
@@ -58,9 +56,7 @@ class Detector:
         self.out_name = self.session.get_outputs()[0].name
         self.names    = COCO_NAMES
 
-    # ---------------------------------------------------------------- #
     def _preprocess(self, img_bgr):
-        """Letterbox resize → float32 NCHW tensor."""
         h, w   = img_bgr.shape[:2]
         scale  = IMGSZ / max(h, w)
         nh, nw = int(h * scale), int(w * scale)
@@ -75,8 +71,7 @@ class Detector:
         return tensor, scale, ph, pw
 
     def _postprocess(self, raw, scale, ph, pw, orig_h, orig_w, conf_thresh):
-        """raw: [1, 84, 8400] → lists of (xyxy, score, class_id)."""
-        pred  = raw[0].T                          # [8400, 84]
+        pred  = raw[0].T
         cx, cy, bw, bh = pred[:,0], pred[:,1], pred[:,2], pred[:,3]
         scores    = pred[:, 4:].max(axis=1)
         class_ids = pred[:, 4:].argmax(axis=1)
@@ -109,7 +104,6 @@ class Detector:
         xyxy = np.stack([x1[idx], y1[idx], x2[idx], y2[idx]], axis=1)
         return xyxy, scores[idx], class_ids[idx]
 
-    # ---------------------------------------------------------------- #
     def detect(self, image, conf: float = DEFAULT_CONF):
         orig_h, orig_w = image.shape[:2]
         tensor, scale, ph, pw = self._preprocess(image)
@@ -121,22 +115,36 @@ class Detector:
         counter   = Counter()
         details   = []
 
+        # ── Scale thickness and font to image size so boxes are
+        #    clearly visible on both small and large photos ──────────
+        img_diag   = (orig_h ** 2 + orig_w ** 2) ** 0.5
+        lw         = max(2, int(img_diag / 500))   # line width
+        font_scale = max(0.6, img_diag / 2000)      # text size
+        font_thick = max(1, lw // 2)                # text thickness
+        pad        = max(6, lw * 3)                 # label padding
+
         for box, score, cls_id in zip(boxes, scores, class_ids):
             x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
             label      = self.names.get(int(cls_id), str(cls_id))
             confidence = round(float(score), 3)
             color      = _color(cls_id)
 
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            # Bounding box
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, lw)
+
+            # Label background + text
             txt = f"{label} {confidence:.2f}"
             (tw, th), _ = cv2.getTextSize(
-                txt, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+                txt, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+            label_y = max(y1, th + pad)
             cv2.rectangle(annotated,
-                          (x1, y1 - th - 8), (x1 + tw + 6, y1),
+                          (x1, label_y - th - pad),
+                          (x1 + tw + pad, label_y),
                           color, -1)
-            cv2.putText(annotated, txt, (x1 + 3, y1 - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1,
-                        cv2.LINE_AA)
+            cv2.putText(annotated, txt,
+                        (x1 + pad // 2, label_y - pad // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+                        (0, 0, 0), font_thick, cv2.LINE_AA)
 
             counter[label] += 1
             details.append({
