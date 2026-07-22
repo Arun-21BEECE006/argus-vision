@@ -45,7 +45,7 @@ class Detector:
             summary  (dict): {class_name: count}
             details  (list): [{label, conf, box:[x1,y1,x2,y2]}, ...]
         """
-        result = self.model.predict(image, conf=conf, verbose=False, imgsz=320)[0]
+        result = self.model.predict(image, conf=conf, verbose=False, imgsz=640)[0]
         annotated = result.plot()  # BGR image with boxes drawn
 
         details = []
