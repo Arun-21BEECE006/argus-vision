@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-MODEL_PATH   = os.environ.get("ARGUS_MODEL",  "yolo11n.onnx")
+MODEL_PATH   = os.environ.get("ARGUS_MODEL",  "yolo11s.onnx")
 DEFAULT_CONF = float(os.environ.get("ARGUS_CONF", "0.35"))
 IMGSZ        = 640
 
