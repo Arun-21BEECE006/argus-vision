@@ -1,8 +1,8 @@
 venv/
 __pycache__/
+*.pyc
 uploads/*
 outputs/*
-*.pyc
 !uploads/.gitkeep
 !outputs/.gitkeep
 yolo11n.pt
