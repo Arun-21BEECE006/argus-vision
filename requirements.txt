@@ -1,5 +1,5 @@
 flask==3.1.*
-onnxruntime==1.19.*
+onnxruntime==1.21.*
 opencv-python-headless==4.13.*
 numpy
 gunicorn

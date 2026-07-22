@@ -5,3 +5,4 @@ outputs/*
 *.pyc
 !uploads/.gitkeep
 !outputs/.gitkeep
+yolo11n.pt
