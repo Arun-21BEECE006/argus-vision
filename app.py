@@ -248,6 +248,42 @@ def _try_h264(src):
     return src
 
 
+
+# ── Single-frame detection (browser webcam) ──────────────────────
+@app.route("/api/detect/frame", methods=["POST"])
+def api_detect_frame():
+    """
+    Receives a JPEG from the browser webcam, runs detection,
+    returns annotated JPEG. Used by the live camera page.
+    """
+    try:
+        conf = float(request.args.get("conf", DEFAULT_CONF))
+        data = np.frombuffer(request.get_data(), np.uint8)
+        frame = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if frame is None:
+            return "Bad frame", 400
+
+        # Resize to 480p max for fast inference on free tier
+        fh, fw = frame.shape[:2]
+        if max(fw, fh) > 480:
+            s     = 480 / max(fw, fh)
+            frame = cv2.resize(frame, (int(fw * s), int(fh * s)))
+
+        annotated, summary, _ = detector.detect(frame, conf=conf)
+        gc.collect()
+
+        _, buf = cv2.imencode(".jpg", annotated,
+                              [cv2.IMWRITE_JPEG_QUALITY, 80])
+
+        import json
+        resp = Response(buf.tobytes(), mimetype="image/jpeg")
+        resp.headers["X-Summary"] = json.dumps(summary)
+        resp.headers["Access-Control-Expose-Headers"] = "X-Summary"
+        return resp
+    except Exception:
+        return "Error", 500
+
+
 # ── Live streaming ────────────────────────────────────────────────────
 def _open_source(source):
     if source == "webcam": return cv2.VideoCapture(0)

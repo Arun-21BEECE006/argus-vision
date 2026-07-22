@@ -1,64 +1,203 @@
-{% extends "base.html" %}
-{% block title %}Live Camera — Argus Vision{% endblock %}
-
-{% block content %}
+{% extends "base.html" %} {% block title %}Live Camera — Argus Vision{% endblock
+%} {% block content %}
 <section class="tool">
   <div class="tool-head">
-    <div class="eyebrow mono"><span class="dot"></span> SRC_03 · LIVE WEBCAM</div>
+    <div class="eyebrow mono">
+      <span class="dot"></span> SRC_03 · BROWSER WEBCAM
+    </div>
     <h1>Live camera detection</h1>
-    <p>Stream the webcam attached to the machine running Argus. Boxes and a live object count are drawn on every frame.</p>
+    <p>
+      Stream from your browser camera. Argus detects objects on every frame in
+      real time.
+    </p>
   </div>
 
   <div class="tool-grid">
     <div class="panel">
       <h4>Controls</h4>
+
       <label class="field">CONFIDENCE THRESHOLD</label>
       <div class="slider-row">
-        <input type="range" id="conf" min="0.1" max="0.9" step="0.05" value="0.35">
+        <input
+          type="range"
+          id="conf"
+          min="0.1"
+          max="0.9"
+          step="0.05"
+          value="0.35"
+        />
         <span class="slider-val mono" id="confVal">0.35</span>
       </div>
+
       <div class="live-controls">
         <button class="btn btn-primary" id="start">Start stream</button>
         <button class="btn btn-ghost" id="stop">Stop</button>
       </div>
+
       <div class="err" id="err"></div>
-      <p class="hint">Uses the default camera (device 0) on the server host. If nothing appears, the machine has no
-        camera or another app is using it. The live count is drawn in the top-left of the feed.</p>
+
+      <p class="hint">
+        Uses your <b>browser's built-in camera</b> — allow access when prompted.
+        Each frame is sent to the server for detection and returned with boxes
+        drawn.
+      </p>
     </div>
 
     <div>
       <div class="stage">
         <span class="corner tl"></span><span class="corner tr"></span>
         <span class="corner bl"></span><span class="corner br"></span>
+
         <div class="placeholder" id="ph">
-          <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="12" cy="10" r="7"/><circle cx="12" cy="10" r="2.5"/><path d="M6 20h12"/></svg>
-          <div>Press “Start stream” to begin</div>
+          <svg
+            width="52"
+            height="52"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+          >
+            <circle cx="12" cy="10" r="7" />
+            <circle cx="12" cy="10" r="2.5" />
+            <path d="M6 20h12" />
+          </svg>
+          <div>Press "Start stream" to begin</div>
         </div>
-        <img id="feed" style="display:none">
+
+        <!-- Annotated result shown here -->
+        <img
+          id="feed"
+          style="display: none; max-width: 100%; max-height: 72vh"
+        />
+
+        <!-- Hidden elements for capture -->
+        <video
+          id="localVideo"
+          autoplay
+          playsinline
+          muted
+          style="display: none"
+        ></video>
+        <canvas id="canvas" style="display: none"></canvas>
+      </div>
+
+      <!-- Live count badge -->
+      <div id="liveBadge" style="display: none; margin-top: 10px">
+        <div class="summary-chips" id="liveChips"></div>
       </div>
     </div>
   </div>
 </section>
-{% endblock %}
-
-{% block scripts %}
+{% endblock %} {% block scripts %}
 <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 <script>
-setupUpload(); // wires the confidence slider
-const feed = document.getElementById('feed');
-const ph   = document.getElementById('ph');
+  setupUpload();
 
-document.getElementById('start').onclick = () => {
-  showErr('');
-  const conf = document.getElementById('conf').value;
-  feed.src = `/api/stream?source=webcam&conf=${conf}&t=${Date.now()}`;
-  feed.style.display = 'block';
-  ph.style.display = 'none';
-};
-document.getElementById('stop').onclick = () => {
-  feed.src = '';
-  feed.style.display = 'none';
-  ph.style.display = 'block';
-};
+  const feed = document.getElementById("feed");
+  const ph = document.getElementById("ph");
+  const localVideo = document.getElementById("localVideo");
+  const canvas = document.getElementById("canvas");
+  const liveBadge = document.getElementById("liveBadge");
+  const liveChips = document.getElementById("liveChips");
+  const ctx = canvas.getContext("2d");
+
+  let mediaStream = null;
+  let running = false;
+  let busy = false;
+
+  /* ── Start ─────────────────────────────────────────────────────── */
+  document.getElementById("start").onclick = async () => {
+    showErr("");
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: "user",
+        },
+      });
+      localVideo.srcObject = mediaStream;
+      await localVideo.play();
+
+      canvas.width = localVideo.videoWidth || 640;
+      canvas.height = localVideo.videoHeight || 480;
+
+      ph.style.display = "none";
+      feed.style.display = "block";
+      liveBadge.style.display = "block";
+      running = true;
+      loop();
+    } catch (e) {
+      showErr(
+        "Camera error: " +
+          e.message +
+          ". Make sure you allowed camera access in your browser.",
+      );
+    }
+  };
+
+  /* ── Stop ──────────────────────────────────────────────────────── */
+  document.getElementById("stop").onclick = () => {
+    running = false;
+    if (mediaStream) {
+      mediaStream.getTracks().forEach((t) => t.stop());
+      mediaStream = null;
+    }
+    feed.style.display = "none";
+    liveBadge.style.display = "none";
+    ph.style.display = "block";
+  };
+
+  /* ── Detection loop ────────────────────────────────────────────── */
+  async function loop() {
+    if (!running) return;
+    if (busy) {
+      requestAnimationFrame(loop);
+      return;
+    }
+
+    busy = true;
+    ctx.drawImage(localVideo, 0, 0, canvas.width, canvas.height);
+    const conf = document.getElementById("conf").value;
+
+    canvas.toBlob(
+      async (blob) => {
+        try {
+          const res = await fetch("/api/detect/frame?conf=" + conf, {
+            method: "POST",
+            body: blob,
+            headers: { "Content-Type": "image/jpeg" },
+          });
+
+          if (res.ok) {
+            /* update annotated image */
+            const url = URL.createObjectURL(await res.blob());
+            const oldSrc = feed.src;
+            feed.src = url;
+            if (oldSrc && oldSrc.startsWith("blob:"))
+              URL.revokeObjectURL(oldSrc);
+
+            /* update count badge from header */
+            const summary = res.headers.get("X-Summary");
+            if (summary) {
+              try {
+                const obj = JSON.parse(summary);
+                const total = Object.values(obj).reduce((a, b) => a + b, 0);
+                let html = `<span class="chip total">TOTAL ${total}</span>`;
+                for (const [k, v] of Object.entries(obj))
+                  html += `<span class="chip">${k} <b>${v}</b></span>`;
+                liveChips.innerHTML = html;
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+
+        busy = false;
+        if (running) requestAnimationFrame(loop);
+      },
+      "image/jpeg",
+      0.75,
+    );
+  }
 </script>
 {% endblock %}
