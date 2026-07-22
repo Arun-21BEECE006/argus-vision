@@ -8,6 +8,7 @@ import time
 import uuid
 import threading
 import gc
+import torch
 import cv2
 import numpy as np
 from flask import (Flask, render_template, request, jsonify,
@@ -79,7 +80,7 @@ def api_detect_image():
         return jsonify({"error": "Could not read image."}), 400
 
     # Resize large images before inference to save memory
-    MAX_DIM = 1280
+    MAX_DIM = 640
     h, w = img.shape[:2]
     if max(h, w) > MAX_DIM:
         scale = MAX_DIM / max(h, w)
@@ -89,7 +90,7 @@ def api_detect_image():
     gc.collect()   # ← free memory after every detection
     out_name = f"{uuid.uuid4().hex}.jpg"
     cv2.imwrite(os.path.join(OUTPUT_DIR, out_name), annotated)
-
+    free_memory()
     return jsonify({
         "output": f"/outputs/{out_name}",
         "summary": summary,
@@ -203,7 +204,7 @@ def api_detect_video():
 
     playable_path = _try_h264(output_path)
     playable_name = os.path.basename(playable_path)
-
+    free_memory()
     return jsonify({
         "output": f"/outputs/{playable_name}",
         "fps": round(fps, 3),
@@ -288,6 +289,12 @@ def api_detect_frame():
 def outputs(name):
     return send_from_directory(OUTPUT_DIR, name)
 
+def free_memory():
+    gc.collect()
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     print("=" * 60)
