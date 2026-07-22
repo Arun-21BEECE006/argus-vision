@@ -95,7 +95,7 @@ def _detect_small(frame, conf):
     orig_h, orig_w = frame.shape[:2]
 
     # Shrink to 320px for inference
-    small = cv2.resize(frame, (320, 320))
+    small = cv2.resize(frame, (480, 270))
     _, summary, details = detector.detect(small, conf=conf)
 
     # Scale boxes back to original frame size and draw manually
